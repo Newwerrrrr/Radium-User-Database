@@ -2,8 +2,7 @@ import os
 import json
 import time
 import logging
-from datetime import datetime
-from typing import List, Dict
+from datetime import datetime, timezone
 import requests
 
 BASE_URL = "https://accounts.radie.app/account/bulk"
@@ -37,12 +36,12 @@ def fetch(start: int, end: int):
     except:
         return []
 
-def save(account: Dict):
+def save(account: dict):
     username = sanitize(account.get("username", "unknown"))
     folder = os.path.join(LOG_DIR, username)
     os.makedirs(folder, exist_ok=True)
 
-    ts = datetime.utcnow().strftime("%Y-%m-%dT%H-%M-%S")
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H-%M-%S")
 
     with open(os.path.join(folder, "latest.json"), "w") as f:
         json.dump(account, f, indent=2)
@@ -50,13 +49,33 @@ def save(account: Dict):
     with open(os.path.join(folder, f"{ts}.json"), "w") as f:
         json.dump(account, f, indent=2)
 
+def estimate_eta(start_time, processed_batches, total_batches):
+    if processed_batches == 0:
+        return "calculating..."
+
+    elapsed = time.time() - start_time
+    avg_per_batch = elapsed / processed_batches
+    remaining = total_batches - processed_batches
+    eta_seconds = remaining * avg_per_batch
+
+    return time.strftime("%H:%M:%S", time.gmtime(eta_seconds))
+
 def run():
     current = 1
     missing = 0
 
+    start_time = time.time()
+    processed_batches = 0
+
+    total_batches = 100000  # unknown upper bound, treated as large scan
+
     while True:
         start = current
         end = current + BATCH_SIZE - 1
+
+        processed_batches += 1
+
+        print(f"Scanning {start}-{end} | missing streak={missing}")
 
         data = fetch(start, end)
 
@@ -74,11 +93,23 @@ def run():
             else:
                 missing += 1
 
-        logging.info(f"{start}-{end} missing={missing}")
+        eta = estimate_eta(start_time, processed_batches, total_batches)
+
+        print(
+            f"Batch {processed_batches} | "
+            f"Range {start}-{end} | "
+            f"Missing streak {missing} | "
+            f"ETA {eta}"
+        )
+
+        logging.info(
+            f"{start}-{end} missing={missing} batch={processed_batches} eta={eta}"
+        )
 
         current += BATCH_SIZE
 
         if missing >= CONSECUTIVE_MISSING_LIMIT:
+            print("Missing limit reached, restarting in 5 minutes...")
             break
 
         time.sleep(SLEEP_BETWEEN_REQUESTS)
